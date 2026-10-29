@@ -162,7 +162,7 @@ const TR=[
 const MODES=[{n:'1 PLAYER',k:1,c:'#22d3ee',d:'Solo time attack. Chase the global fastest time.',b:'01'},{n:'2 PLAYERS',k:2,c:'#fbbf24',d:'Live duel on two devices. Share a room code and race head to head.',b:'02'}];
 let ci=0,ti=0,mi=0,G=null,DB=null,ROOM=null,USER=null,UID='';
 /* ---- Optional: paste your Firebase web config here to run OUTSIDE claude.ai (Firestore = leaderboard, Realtime Database = duel rooms) ---- */
-const FIREBASE_CONFIG={apiKey:"AIzaSyA2khnTQ24iWh9LpxdJghd1UeQEDvlhUdk",authDomain:"keystroke-redline.firebaseapp.com",databaseURL:"https://keystroke-redline-default-rtdb.firebaseio.com",projectId:"keystroke-redline",storageBucket:"keystroke-redline.firebasestorage.app",messagingSenderId:"151844245611",appId:"1:151844245611:web:a1b984bead4f139ddaa12e"};
+const FIREBASE_CONFIG={apiKey:"Your_API_KEY",authDomain:"",databaseURL:"",projectId:"Your_ID",storageBucket:"",messagingSenderId:"",appId:""};
 async function fbBoot(){if(window.claude||!FIREBASE_CONFIG)return;
  const L=s=>new Promise(r=>{const e=document.createElement('script');e.src='https://www.gstatic.com/firebasejs/10.12.2/'+s+'-compat.js';e.onload=r;document.head.appendChild(e)});
  await L('firebase-app');await Promise.all([L('firebase-firestore'),L('firebase-database')]);firebase.initializeApp(FIREBASE_CONFIG);const fs=firebase.firestore(),rt=firebase.database();
