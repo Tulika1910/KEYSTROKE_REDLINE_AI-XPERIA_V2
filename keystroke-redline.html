@@ -162,36 +162,59 @@ const TR=[
 {n:'UNDERGROUND CIRCUIT',s:'Sector 7',df:3,c:'#2dd4bf',t:'Beneath the city the lights are low and the rules do not exist. Tunnels echo with engines and there is no mercy for mistakes. Keep your head down, hit every turn, and surface as the champion.'}];
 const MODES=[{n:'1 PLAYER',k:1,c:'#22d3ee',d:'Solo time attack. Chase the global fastest time.',b:'01'},{n:'2 PLAYERS',k:2,c:'#fbbf24',d:'Live duel on two devices. Share a room code and race head to head.',b:'02'}];
 let ci=0,ti=0,mi=0,G=null,DB=null,ROOM=null,USER=null,UID='';
-/* ---- Optional: paste your Firebase web config here to run OUTSIDE claude.ai (Firestore = leaderboard, Realtime Database = duel rooms) ---- */
+/* ---- Firebase (only used outside claude.ai) ------------------------------------------
+   Auth          anonymous sign-in; the uid is stamped on every run and prefixes every room peer id
+   Realtime DB   rooms/<kr-code>/<uid>_<tab>   live duel presence, removed automatically on disconnect
+   Firestore     runs/<runId>                  one document per finished race (leaderboard + history)
+   Every failure is labelled by source (Auth / Realtime DB / Firestore) in the corner chip and console. */
 const FIREBASE_CONFIG={apiKey:"",authDomain:"",databaseURL:"",projectId:"",storageBucket:"",messagingSenderId:"",appId:""};
-const FB={err:'',conn:false};
-function fbNote(e){FB.err=(e&&(e.code||e.message))||String(e);console.warn('[Firebase]',e);const s=document.getElementById('fbs');if(s)s.textContent='DB: '+FB.err;const m=document.getElementById('lm');if(m&&!document.getElementById('lobby').hidden)m.textContent='Firebase error: '+FB.err+' (check database rules)'}
+const FB={on:false,off:0,err:'',short:'',src:'',conn:false,uid:''},srvNow=()=>Date.now()+FB.off;
+const FB_HINT={
+ 'auth/operation-not-allowed':'Turn on Anonymous sign-in (Firebase Console > Authentication > Sign-in method).',
+ 'auth/admin-restricted-operation':'Turn on Anonymous sign-in (Firebase Console > Authentication > Sign-in method).',
+ 'auth/configuration-not-found':'Firebase Console > Authentication > Get started, then enable Anonymous.',
+ 'auth/operation-not-supported-in-this-environment':'Open the game over http(s) or localhost, not as a file.',
+ 'auth/unauthorized-domain':'Add this domain in Authentication > Settings > Authorized domains.',
+ 'auth/network-request-failed':'Network blocked or offline.',
+ 'auth/invalid-api-key':'Check apiKey in FIREBASE_CONFIG.',
+ 'permission-denied':'Firestore rules blocked this. Publish rules that let signed-in users read and create runs.',
+ 'PERMISSION_DENIED':'Realtime Database rules blocked this. Check anonymous sign-in worked and the rules are published.'
+};
+function fbui(){const el=document.getElementById('fbs');if(!el)return;const q=(lsG().q||[]).length;el.textContent=FB.short?'DB \u2715 '+FB.short:(FB.conn?'DB: live':'DB: connecting\u2026')+(q?' \u00b7 '+q+' queued':'')}
+function fbNote(e,src){src=src||'DB';const c=(e&&e.code)||'',m=(e&&e.message)||String(e),h=FB_HINT[c]||(/referer|blocked/i.test(m)?'The API key is restricted (Google Cloud > Credentials). Allow this site.':'');
+ FB.src=src;FB.short=src+' '+(c||'error');FB.err=src+': '+(c||m)+(h?'. '+h:'');console.warn('[Firebase] '+FB.err,e);fbui();
+ const l=document.getElementById('lm');if(l&&!document.getElementById('lobby').hidden&&src!='Firestore')l.textContent=FB.err}
+function fbOk(src){if(FB.src&&FB.src==src){FB.err=FB.short=FB.src='';fbui()}}
+async function ensureAuth(){const a=firebase.auth();if(!a.currentUser){try{await a.signInAnonymously()}catch(e){fbNote(e,'Auth');throw e}}FB.uid=a.currentUser.uid;fbOk('Auth')}
 async function fbBoot(){if(window.claude||!FIREBASE_CONFIG)return;
  const L=s=>new Promise((res,rej)=>{const e=document.createElement('script');e.src='https://www.gstatic.com/firebasejs/10.12.2/'+s+'-compat.js';e.onload=res;e.onerror=()=>rej(new Error('could not load '+s));document.head.appendChild(e)});
  await L('firebase-app');await Promise.all([L('firebase-auth'),L('firebase-firestore'),L('firebase-database')]);
- firebase.initializeApp(FIREBASE_CONFIG);
- try{await firebase.auth().signInAnonymously()}catch(e){console.info('[Firebase] anonymous sign-in unavailable:',e.code)}
+ firebase.initializeApp(FIREBASE_CONFIG);FB.on=true;
+ try{await ensureAuth()}catch(e){/* already reported by fbNote; the game keeps working with local scores */}
  const fs=firebase.firestore();try{fs.settings({experimentalAutoDetectLongPolling:true,merge:true})}catch(e){}
- const rt=firebase.database();rt.ref('.info/connected').on('value',s=>{FB.conn=!!s.val();const el=document.getElementById('fbs');if(el&&!FB.err)el.textContent=FB.conn?'DB: live':'DB: connecting…'});
+ const rt=firebase.database();rt.ref('.info/connected').on('value',s=>{FB.conn=!!s.val();fbui()});rt.ref('.info/serverTimeOffset').on('value',s=>{FB.off=+s.val()||0});
  window.claude={use:async n=>n=='db'?fs:n=='room'?{join:async name=>{
-  const id=Math.random().toString(36).slice(2,10),all=rt.ref('rooms/'+name),ref=all.child(id);
-  ref.onDisconnect().remove().catch(fbNote);let me={},hs=[],last=null;
+  await ensureAuth();
+  const RT=e=>fbNote(e,'Realtime DB'),id=FB.uid+'_'+Math.random().toString(36).slice(2,6),all=rt.ref('rooms/'+name),ref=all.child(id);
+  ref.onDisconnect().remove().catch(RT);let me={},hs=[],last=null;
   const cb=s=>{const v=s.val()||{};last={peers:Object.entries(v).map(([k,p])=>({peer:k,isMe:k==id,kind:'viewer',presence:p}))};hs.forEach(f=>f(last))};
-  all.on('value',cb,fbNote);
-  return{presence:async p=>{me={...me,...p};try{await ref.set(JSON.parse(JSON.stringify(me)))}catch(e){fbNote(e)}},onPeers:f=>{hs.push(f);if(last)f(last);return()=>{hs=hs.filter(x=>x!==f)}},leave:async()=>{all.off('value',cb);try{await ref.remove()}catch(e){}}}}}:null}}
+  all.on('value',cb,RT);
+  return{presence:async p=>{me={...me,...p};try{await ref.set(JSON.parse(JSON.stringify(me)));fbOk('Realtime DB')}catch(e){RT(e)}},onPeers:f=>{hs.push(f);if(last)f(last);return()=>{hs=hs.filter(x=>x!==f)}},leave:async()=>{all.off('value',cb);try{await ref.remove()}catch(e){}}}}}:null}}
 
 
 
-
-
-
-(async()=>{try{await fbBoot()}catch(e){fbNote(e)}const C=window.claude;if(!C||!C.use)return;try{DB=await C.use('db')}catch(e){}try{ROOM=await C.use('room')}catch(e){}try{USER=await C.use('user');UID=USER&&USER.id?await USER.id():''}catch(e){}dock()})();
+(async()=>{try{await fbBoot()}catch(e){fbNote(e,'Boot')}const C=window.claude;if(!C||!C.use)return;try{DB=await C.use('db')}catch(e){}try{ROOM=await C.use('room')}catch(e){}try{USER=await C.use('user');UID=USER&&USER.id?await USER.id():''}catch(e){}if(!UID&&FB.uid)UID=FB.uid;dock();qFlush()})();
 
 /* ---- storage: shared database with local fallback ---- */
 const lsG=()=>{try{return JSON.parse(localStorage.getItem('sx2')||'{}')}catch(e){return{}}},lsS=o=>{try{localStorage.setItem('sx2',JSON.stringify(o))}catch(e){}};
-async function addRun(r){if(DB)try{await DB.collection('runs').add(r);return}catch(e){fbNote(e)}const o=lsG();(o.r=o.r||[]).push(r);lsS(o)}
-async function getRuns(k){if(DB)try{return(await DB.collection('runs').where('k','==',k).get()).docs.map(d=>d.data())}catch(e){fbNote(e)}return(lsG().r||[]).filter(r=>r.k==k)}
-async function getAll(){if(DB)try{return(await DB.collection('runs').limit(500).get()).docs.map(d=>d.data())}catch(e){fbNote(e)}return lsG().r||[]}
+const runId=r=>r.ts.toString(36)+'-'+((r.uid||'anon').slice(0,8));
+async function saveRun(r){if(FB.on){await ensureAuth();await DB.collection('runs').doc(r.id).set({...r,at:firebase.firestore.FieldValue.serverTimestamp()})}else await DB.collection('runs').add(r)}
+function qPush(r){const o=lsG();(o.r=o.r||[]).push(r);if(FB.on)(o.q=o.q||[]).push(r);lsS(o);fbui()}
+async function qFlush(){if(!FB.on||!DB)return;const q=lsG().q||[];if(!q.length)return;const sent=[];for(const r of q){try{await saveRun(r);sent.push(r.id)}catch(e){fbNote(e,'Firestore');break}}
+ const o=lsG();o.q=(o.q||[]).filter(x=>!sent.includes(x.id));o.r=(o.r||[]).filter(x=>!sent.includes(x.id));lsS(o);if(sent.length)fbOk('Firestore');fbui()}
+async function addRun(r){if(DB)try{await saveRun(r);fbOk('Firestore');qFlush();return}catch(e){fbNote(e,'Firestore')}qPush(r)}
+async function getRuns(k){if(DB)try{const q=await DB.collection('runs').where('k','==',k).get();fbOk('Firestore');return q.docs.map(d=>d.data())}catch(e){fbNote(e,'Firestore')}return(lsG().r||[]).filter(r=>r.k==k)}
+async function getAll(){if(DB)try{const q=await DB.collection('runs').limit(500).get();fbOk('Firestore');return q.docs.map(d=>d.data())}catch(e){fbNote(e,'Firestore')}return lsG().r||[]}
 const key=m=>m==2?'duel':'solo',nm=()=>($('#nm').value.trim()||'PILOT').toUpperCase();
 
 /* ---- carousels ---- */
@@ -240,29 +263,29 @@ function rows(sel,l,me,n){const big=sel=='#lb',d=RK.m==2;l=[...l].sort((a,b)=>a.
 const MP={r:null,role:'',op:null,seen:0,seq:0,code:''};
 const msg=t=>$('#lm').textContent=t||'',setP=o=>MP.r&&MP.r.presence(o);
 const opN=()=>MP.op?esc(MP.op.nm||'PILOT'):'';
-function openLobby(){$('#lobby').hidden=0;if(!MP.r){$('#l1').hidden=0;$('#l2').hidden=1;msg(ROOM?'':'Multiplayer needs a signed-in claude.ai viewer on both devices.')}gsap.from('#lobby .box',{y:20,opacity:0,duration:.5})}
+function openLobby(){$('#lobby').hidden=0;if(!MP.r){$('#l1').hidden=0;$('#l2').hidden=1;msg(ROOM?'':(FB.err||'Multiplayer needs Firebase (FIREBASE_CONFIG) or a signed-in claude.ai viewer on both devices.'))}gsap.from('#lobby .box',{y:20,opacity:0,duration:.5})}
 async function enter(code,role){if(!ROOM)return msg('Multiplayer is unavailable in this view.');msg('Connecting…');
- try{MP.r=await ROOM.join('kr-'+code.toLowerCase())}catch(e){return msg('Could not open the room.')}
+ try{MP.r=await ROOM.join('kr-'+code.toLowerCase())}catch(e){return msg(FB.err||'Could not open the room.')}
  MP.code=code;MP.role=role;MP.op=null;MP.r.onPeers(peers);setP({nm:nm(),car:ci,tr:ti,st:'lobby',seq:0,p:0,role});$('#l1').hidden=1;$('#l2').hidden=0;$('#lc').textContent=code;msg(role=='host'?'Share this code with your rival.':'Joined. Waiting for the host to start.');lobbyUI()}
 function peers(ch){const o=ch.peers.find(p=>!p.isMe&&p.kind=='viewer');MP.op=o?o.presence:null;
  if(MP.role=='guest'&&MP.op&&!G&&MP.op.tr!=null&&TR[MP.op.tr]){ti=MP.op.tr;dock()}
- if(MP.role=='guest'&&MP.op&&MP.op.st=='cd'&&MP.op.seq>MP.seen&&!G){MP.seen=MP.op.seq;$('#lobby').hidden=1;begin(2)}
+ if(MP.role=='guest'&&MP.op&&MP.op.st=='cd'&&MP.op.seq>MP.seen&&!G){MP.seen=MP.op.seq;$('#lobby').hidden=1;begin(2,MP.op.go)}
  lobbyUI();if(G&&G.md==2)updRes()}
 function lobbyUI(){if($('#l2').hidden)return;const o=MP.op,sl=(n,c,l)=>`<img src="${CI[c]||CI[0]}" alt=""><b>${n}</b><span class="mut">${l}</span>`;
  $('#s1').innerHTML=sl(esc(nm()),ci,'YOU · '+MP.role.toUpperCase());$('#s2').innerHTML=o?sl(opN(),o.car|0,'RIVAL · READY'):'<div class="mut" style="padding-top:34px">Waiting for rival…</div>';
  $('#la').textContent='Arena: '+TR[ti].n;$('#st').hidden=MP.role!='host';$('#st').disabled=!o}
 $('#mk').onclick=()=>enter(Array.from({length:4},()=>'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[Math.random()*31|0]).join(''),'host');
-$('#jn').onclick=()=>{const c=$('#jc').value.trim().toUpperCase();if(c.length==4)enter(c,'guest');else msg('Enter the 4 character code.')};
-$('#st').onclick=()=>{if(!MP.op)return;MP.seq++;setP({st:'cd',seq:MP.seq,tr:ti,car:ci,nm:nm(),p:0});$('#lobby').hidden=1;begin(2)};
+$('#jn').onclick=()=>{const c=$('#jc').value.trim().toUpperCase();if(/^[A-Z0-9]{4}$/.test(c))enter(c,'guest');else msg('Enter the 4 character code.')};
+$('#st').onclick=()=>{if(!MP.op)return;MP.seq++;const go=FB.on?srvNow()+3600:null;setP({st:'cd',seq:MP.seq,go,tr:ti,car:ci,nm:nm(),p:0});$('#lobby').hidden=1;begin(2,go)};
 $('#lv').onclick=async()=>{$('#lobby').hidden=1;if(MP.r){await MP.r.leave();MP.r=null;MP.op=null;$('#l1').hidden=0;$('#l2').hidden=1}};
 
 /* ---- race ---- */
 const cv=$('#cv'),cx=cv.getContext('2d');let W=0,H=0;
 function size(){const d=devicePixelRatio||1;W=cv.clientWidth;H=cv.clientHeight;cv.width=W*d;cv.height=H*d;cx.setTransform(d,0,0,d,0,0)}
 const pips=()=>$$('.pips i').forEach((p,i)=>p.classList.toggle('x',i<G.err));
-function begin(md){
+function begin(md,go){
  const T=TR[ti],C=CARS[ci];
- G={T,C,md,x:T.t,i:0,dp:0,od:0,err:0,wrong:0,ok:0,crashes:0,streak:0,keys:[],speed:0,slow:0,nitro:false,st:'cd',cd:3,t0:0,time:0,cam:0,cr:0,pt:[],sh:0,fl:0,ls:0,fin:null};
+ G={T,C,md,x:T.t,i:0,dp:0,od:0,err:0,wrong:0,ok:0,crashes:0,streak:0,keys:[],speed:0,slow:0,nitro:false,st:'cd',cd:3,goL:(go!=null&&FB.on)?performance.now()+(go-srvNow()):null,t0:0,time:0,cam:0,cr:0,pt:[],sh:0,fl:0,ls:0,fin:null};
  $('#tx').innerHTML=[...T.t].map(c=>`<span>${c}</span>`).join('');G.sp=$$('#tx span');G.sp[0].className='c';
  $('#mko').hidden=md!=2;$('#rn1').textContent=esc(nm());$('#rn2').textContent=md==2?opN():'';
  WINS.forEach(w=>$('#'+w[0]).hidden=1);$('#res').hidden=1;$('#lobby').hidden=1;$('#race').hidden=0;size();pips();gsap.from('#race',{opacity:0,duration:.6})}
@@ -272,10 +295,12 @@ addEventListener('keydown',e=>{
  if(e.key===G.x[G.i]){G.ok++;G.streak++;G.keys.push(performance.now());s.className='d';G.i++;if(G.i>=G.x.length)return finish();G.sp[G.i].className='c'}
  else{G.wrong++;G.err++;G.streak=0;G.slow=.9;s.className='x';setTimeout(()=>{if(G&&G.sp[G.i]===s)s.className='c'},140);pips();if(G.err>=3)crash()}});
 function crash(){G.st='crash';G.cr=3;G.crashes++;G.sh=.6;G.fl=1;G.nitro=false}
+const waitOpp=ms=>new Promise(res=>{const t=performance.now(),i=setInterval(()=>{if(!MP.op||MP.op.st=='done'||performance.now()-t>ms){clearInterval(i);res()}},40)});
 async function finish(){
  const g=G,t=(performance.now()-g.t0)/1000,wpm=Math.round(g.x.length/5/(t/60)),acc=Math.round(g.ok/(g.ok+g.wrong)*100);
  g.st='done';g.fin={t,wpm,acc};g.time=t;if(g.md==2)setP({st:'done',t,p:1});
- const o=MP.op,win=g.md==2?(o&&o.st=='done'?(t<=o.t?1:0):1):0,r={k:key(g.md),tr:ti,md:g.md==2?'duel':'solo',n:nm(),car:ci,t,w:wpm,a:acc,cr:g.crashes,win,ts:Date.now(),uid:UID};
+ if(g.md==2)await waitOpp(1500);
+ const o=MP.op,win=g.md==2?(o&&o.st=='done'?(t<=o.t?1:0):1):0,r={k:key(g.md),tr:ti,md:g.md==2?'duel':'solo',n:nm(),car:ci,t,w:wpm,a:acc,cr:g.crashes,win,ts:Date.now(),uid:UID,room:g.md==2?MP.code:'',match:g.md==2?MP.code+'#'+(MP.role=='host'?MP.seq:MP.seen):''};r.id=runId(r);
  $('#r0').textContent=g.T.n;$('#r1').textContent=t.toFixed(2)+'s';$('#r2').textContent=wpm;$('#r3').textContent=acc+'%';$('#r4').textContent=g.crashes;$('#rl').innerHTML='';
  await addRun(r);const l=await getRuns(r.k),rk=[...l].sort((a,b)=>a.t-b.t).findIndex(x=>x.ts===r.ts)+1;if(rk)$('#r0').textContent=`RANK #${rk} · ${g.T.n}`;rows('#rl',l,r.ts,6);updRes();dock();
  setTimeout(()=>{$('#race').hidden=1;$('#res').hidden=0;$('#again').textContent=g.md==2?'REMATCH (LOBBY)':'RACE AGAIN';gsap.from('#res .res>*',{y:24,opacity:0,stagger:.07,duration:.6,ease:'power3.out'});gsap.from('#r1',{scale:.7,duration:.9,ease:'expo.out'})},700)}
@@ -285,7 +310,7 @@ gsap.ticker.lagSmoothing(0);
 gsap.ticker.add((t,dm)=>{cc.L.raf(t*1000);tc.L.raf(t*1000);mc.L.raf(t*1000);if(G&&!$('#race').hidden)step(Math.min(dm,50)/1000)});
 function step(dt){
  const g=G,now=performance.now(),ov=$('#ov');
- if(g.st=='cd'){g.cd-=dt;ov.style.color=g.T.c;ov.innerHTML=g.cd>0?Math.ceil(g.cd)+'<small>GET READY · TYPE TO DRIVE</small>':'';if(g.cd<=0){g.st='run';g.t0=now;ov.textContent='GO';gsap.fromTo(ov,{opacity:1,scale:1},{opacity:0,scale:1.5,duration:.7})}}
+ if(g.st=='cd'){if(g.goL!=null)g.cd=(g.goL-now)/1000;else g.cd-=dt;ov.style.color=g.T.c;ov.innerHTML=g.cd>0?Math.ceil(Math.min(g.cd,3))+'<small>GET READY · TYPE TO DRIVE</small>':'';if(g.cd<=0){g.st='run';g.t0=g.goL!=null?g.goL:now;ov.textContent='GO';gsap.fromTo(ov,{opacity:1,scale:1},{opacity:0,scale:1.5,duration:.7})}}
  if(g.st=='run'||g.st=='crash')g.time=(now-g.t0)/1000;
  g.keys=g.keys.filter(k=>now-k<2500);const cps=g.keys.length/2.5;
  if(g.st=='run'){g.slow-=dt;g.nitro=g.streak>=20&&cps>=4;let tg=(18+cps*19.2)*g.C.a*g.C.t;if(g.nitro)tg*=g.C.z;if(g.slow>0)tg*=.35;g.speed+=(tg-g.speed)*Math.min(1,dt*2.2*g.C.a)}
